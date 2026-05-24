@@ -51,15 +51,30 @@ def query_pipeline(query: str, top_k: int = 5) -> Dict[str, Any]:
                     col_name = get_collection_name(doc_prefix)
                     col = client.get_or_create_collection(name=col_name)
                     data = col.get(ids=ids)
-                    docs = data.get("documents") if isinstance(data, dict) else getattr(data, "documents", None)
-                    metadatas = data.get("metadatas") if isinstance(data, dict) else getattr(data, "metadatas", None)
-                    ids_ret = data.get("ids") if isinstance(data, dict) else getattr(data, "ids", None)
-                    if ids_ret and docs:
-                        for i, cid in enumerate(ids_ret):
-                            res_map[cid] = {
-                                "text": docs[i] if i < len(docs) else None,
-                                "metadata": metadatas[i] if metadatas and i < len(metadatas) else None,
-                            }
+
+                    # normalize possible nested return shapes
+                    def _unwrap(val):
+                        if val is None:
+                            return []
+                        if isinstance(val, list):
+                            # If nested lists (per-query), flatten
+                            if val and isinstance(val[0], list):
+                                return [item for sub in val for item in sub]
+                            return val
+                        if isinstance(val, dict):
+                            return [val]
+                        return [val]
+
+                    ids_ret = _unwrap(data.get("ids") if isinstance(data, dict) else getattr(data, "ids", None))
+                    docs = _unwrap(data.get("documents") if isinstance(data, dict) else getattr(data, "documents", None))
+                    metadatas = _unwrap(data.get("metadatas") if isinstance(data, dict) else getattr(data, "metadatas", None))
+
+                    # If ids_ret is list of lists (edge case), it's already flattened by _unwrap
+                    for i, cid in enumerate(ids_ret):
+                        res_map[cid] = {
+                            "text": docs[i] if i < len(docs) else None,
+                            "metadata": metadatas[i] if metadatas and i < len(metadatas) else None,
+                        }
                 except Exception:
                     continue
             return res_map
