@@ -1,9 +1,18 @@
 from typing import List, Dict, Any
 
-from ..ingestion import embedder
-from ..store import bm25_store
-from .hyde import hyde_embedding_for_query
-from .dense_search import dense_query_with_embedding
+try:
+    from backend.ingestion import embedder
+    from backend.store import bm25_store
+except Exception:
+    from ingestion import embedder
+    from store import bm25_store
+
+try:
+    from .hyde import hyde_embedding_for_query
+    from .dense_search import dense_query_with_embedding
+except Exception:
+    from hyde import hyde_embedding_for_query
+    from dense_search import dense_query_with_embedding
 
 
 def query_pipeline(query: str, top_k: int = 5) -> Dict[str, Any]:
