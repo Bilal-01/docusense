@@ -1,9 +1,22 @@
 import tempfile
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 
-from ingestion import parse_document, chunk_text_blocks
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
+try:
+    from backend.ingestion import parse_document, chunk_text_blocks, embed_chunks
+except ModuleNotFoundError:
+    from ingestion import parse_document, chunk_text_blocks, embed_chunks
+
+try:
+    from backend.store.bm25_store import build_and_persist_bm25
+except ModuleNotFoundError:
+    from store.bm25_store import build_and_persist_bm25
 
 app = FastAPI(
     title="DocuSense API",
@@ -43,6 +56,16 @@ async def upload_document(file: UploadFile = File(...)) -> list[dict]:
 
         # Semantically chunk text blocks
         chunks = chunk_text_blocks(blocks)
+
+        # Embed and persist chunks to ChromaDB
+        doc_id = os.path.splitext(file.filename)[0]
+        embed_chunks(chunks, doc_id)
+
+        # Build and persist BM25 index for the uploaded chunks
+        try:
+            build_and_persist_bm25(chunks)
+        except Exception:
+            pass
 
         # Convert Chunk objects to dictionaries
         result = [chunk.to_dict() for chunk in chunks]

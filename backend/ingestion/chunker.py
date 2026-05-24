@@ -1,4 +1,20 @@
 from typing import List
+
+# Prefer exact token counts via tiktoken; fall back to heuristic if unavailable
+try:
+    import tiktoken
+    _TIKTOKEN_ENCODING = tiktoken.get_encoding("cl100k_base")
+except Exception:
+    _TIKTOKEN_ENCODING = None
+
+
+def count_tokens(text: str) -> int:
+    if _TIKTOKEN_ENCODING is not None:
+        try:
+            return len(_TIKTOKEN_ENCODING.encode(text))
+        except Exception:
+            return max(1, len(text) // 4)
+    return max(1, len(text) // 4)
 from llama_index.core.node_parser import SemanticSplitterNodeParser
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.core.schema import Document
@@ -91,8 +107,8 @@ def chunk_text_blocks(
             char_start = max(0, min(char_start, text_len))
             char_end = max(char_start, min(char_end, text_len))
 
-            # Estimate token count (rough: ~4 chars per token on average)
-            token_count = max(1, len(node_text) // 4)
+            # Accurate token count using tokenizer when available
+            token_count = count_tokens(node_text)
 
             # Generate deterministic chunk ID
             # Strip extension from document name for cleaner IDs

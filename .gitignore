@@ -1,8 +1,10 @@
 env
 venv
+.env
 test
 __pycache__
 *.pyc
 *.pyo
 *.pyd
 *.log
+.chroma/

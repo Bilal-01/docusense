@@ -30,7 +30,7 @@ DocuSense combines semantic search, dense & sparse indexing, cross-encoder reran
 |-------|------|-----|
 | Document Parsing | `pdfplumber`, `python-docx` | Best structure preservation |
 | Chunking | LlamaIndex SemanticSplitter | Meaning-aware splits |
-| Embeddings | `text-embedding-3-small` (OpenAI) | Cost-efficient, high quality |
+| Embeddings | `Ollama` local/open-source model | Free local/hosted embeddings |
 | Dense Index | ChromaDB | Local, no Docker needed |
 | Sparse Index | `rank_bm25` | Keyword recall for exact terms |
 | Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Open-source, fast, accurate |
