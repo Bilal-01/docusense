@@ -18,6 +18,11 @@ try:
 except ModuleNotFoundError:
     from store.bm25_store import build_and_persist_bm25
 
+try:
+    from backend.retrieval.pipeline import query_pipeline
+except ModuleNotFoundError:
+    from retrieval.pipeline import query_pipeline
+
 app = FastAPI(
     title="DocuSense API",
     description="Document ingestion and parsing API",
@@ -91,6 +96,15 @@ async def upload_document(file: UploadFile = File(...)) -> list[dict]:
 async def health_check():
     """Health check endpoint."""
     return {"status": "ok"}
+
+
+@app.get("/query")
+async def query_endpoint(q: str):
+    try:
+        res = query_pipeline(q, top_k=5)
+        return JSONResponse(status_code=200, content=res)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
