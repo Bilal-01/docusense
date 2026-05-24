@@ -3,3 +3,6 @@ uvicorn[standard]==0.24.0
 pdfplumber==0.10.3
 python-docx==0.8.11
 python-multipart==0.0.6
+llama-index-core==0.10.0
+llama-index-embeddings-huggingface==0.1.0
+sentence-transformers==2.2.2
