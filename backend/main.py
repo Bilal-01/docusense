@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 
-from ingestion import parse_document, TextBlock
+from ingestion import parse_document, chunk_text_blocks
 
 app = FastAPI(
     title="DocuSense API",
@@ -15,9 +15,10 @@ app = FastAPI(
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...)) -> list[dict]:
     """
-    Upload and parse a document (PDF, DOCX, or TXT).
+    Upload, parse, and semantically chunk a document (PDF, DOCX, or TXT).
 
-    Returns a list of TextBlock objects with extracted text and metadata.
+    Returns a list of Chunk objects with semantic boundaries, position metadata,
+    and deterministic chunk IDs for deduplication and retrieval.
     """
     # Validate file type
     allowed_extensions = {'.pdf', '.docx', '.txt'}
@@ -37,11 +38,14 @@ async def upload_document(file: UploadFile = File(...)) -> list[dict]:
             temp_file.write(content)
             temp_path = temp_file.name
 
-        # Parse document
+        # Parse document into text blocks
         blocks = parse_document(temp_path, file_type=file_ext.lstrip('.'))
 
-        # Convert TextBlock objects to dictionaries
-        result = [block.to_dict() for block in blocks]
+        # Semantically chunk text blocks
+        chunks = chunk_text_blocks(blocks)
+
+        # Convert Chunk objects to dictionaries
+        result = [chunk.to_dict() for chunk in chunks]
 
         return result
 
@@ -49,6 +53,8 @@ async def upload_document(file: UploadFile = File(...)) -> list[dict]:
         raise HTTPException(status_code=400, detail=str(e))
     except IOError as e:
         raise HTTPException(status_code=400, detail=f"Error parsing file: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
     finally:
         # Clean up temporary file
         if temp_path and os.path.exists(temp_path):
