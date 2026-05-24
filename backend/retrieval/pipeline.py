@@ -31,9 +31,61 @@ def query_pipeline(query: str, top_k: int = 5) -> Dict[str, Any]:
     if hyde_embedding:
         dense_results = dense_query_with_embedding(hyde_embedding, top_n=top_k)
 
+    # Enrich results with text and metadata from Chroma
+    try:
+        try:
+            from backend.store.chroma_store import client, get_collection_name
+        except Exception:
+            from store.chroma_store import client, get_collection_name
+
+        def fetch_chunks(chunk_ids):
+            # group by doc id prefix (before _p)
+            groups = {}
+            for cid in chunk_ids:
+                doc_prefix = cid.split("_p")[0]
+                groups.setdefault(doc_prefix, []).append(cid)
+
+            res_map = {}
+            for doc_prefix, ids in groups.items():
+                try:
+                    col_name = get_collection_name(doc_prefix)
+                    col = client.get_or_create_collection(name=col_name)
+                    data = col.get(ids=ids)
+                    docs = data.get("documents") if isinstance(data, dict) else getattr(data, "documents", None)
+                    metadatas = data.get("metadatas") if isinstance(data, dict) else getattr(data, "metadatas", None)
+                    ids_ret = data.get("ids") if isinstance(data, dict) else getattr(data, "ids", None)
+                    if ids_ret and docs:
+                        for i, cid in enumerate(ids_ret):
+                            res_map[cid] = {
+                                "text": docs[i] if i < len(docs) else None,
+                                "metadata": metadatas[i] if metadatas and i < len(metadatas) else None,
+                            }
+                except Exception:
+                    continue
+            return res_map
+
+    except Exception:
+        fetch_chunks = lambda ids: {}
+
+    all_ids = [cid for cid, _ in bm25_results] + [cid for cid, _ in dense_results]
+    unique_ids = list(dict.fromkeys(all_ids))
+    chunk_map = fetch_chunks(unique_ids) if unique_ids else {}
+
+    def enrich(results):
+        out = []
+        for cid, score in results:
+            info = chunk_map.get(cid, {})
+            out.append({
+                "chunk_id": cid,
+                "score": score,
+                "text": info.get("text"),
+                "metadata": info.get("metadata"),
+            })
+        return out
+
     return {
-        "bm25": bm25_results,
-        "dense": dense_results,
+        "bm25": enrich(bm25_results),
+        "dense": enrich(dense_results),
     }
 
 

@@ -63,27 +63,67 @@ DEFAULT_PERSIST_DIR = os.path.abspath(
 )
 
 
-def build_and_persist_bm25(chunks: List[Chunk], persist_dir: Optional[str] = None) -> dict:
+def build_and_persist_bm25(chunks: Optional[List[Chunk]] = None, persist_dir: Optional[str] = None) -> dict:
+    """Build BM25 over provided chunks or, if None, over all chunks in Chroma.
+
+    Returns metadata about persisted index.
+    """
     if persist_dir is None:
         persist_dir = DEFAULT_PERSIST_DIR
     os.makedirs(persist_dir, exist_ok=True)
 
-    tokenized_corpus = [_tokenize(c.text) for c in chunks]
-    mapping = [c.chunk_id for c in chunks]
+    # If no chunks provided, attempt to read all chunks from Chroma
+    if chunks is None:
+        token_texts = []
+        mapping = []
+        try:
+            try:
+                from backend.store.chroma_store import client
+            except Exception:
+                from store.chroma_store import client
 
-    if BM25Okapi is None:
-        # Can't build BM25 without dependency; persist tokenized corpus and mapping
-        data = {"tokenized_corpus": tokenized_corpus, "mapping": mapping}
+            # Try to list collections
+            try:
+                cols = client.list_collections()
+            except Exception:
+                cols = []
+
+            col_names = []
+            for c in cols:
+                if isinstance(c, dict):
+                    name = c.get("name")
+                else:
+                    name = getattr(c, "name", None)
+                if name:
+                    col_names.append(name)
+
+            for name in col_names:
+                try:
+                    col = client.get_collection(name=name)
+                    data = col.get()
+                    ids = data.get("ids", []) if isinstance(data, dict) else getattr(data, "ids", [])
+                    docs = data.get("documents", []) if isinstance(data, dict) else getattr(data, "documents", [])
+                    for doc_id, doc_text in zip(ids, docs):
+                        token_texts.append(_tokenize(doc_text))
+                        mapping.append(doc_id)
+                except Exception:
+                    continue
+
+            tokenized_corpus = token_texts
+        except Exception:
+            tokenized_corpus = []
+            mapping = []
     else:
-        bm25 = BM25Okapi(tokenized_corpus)
-        # Do not attempt to pickle BM25 object; persist tokenized corpus and mapping
-        data = {"tokenized_corpus": tokenized_corpus, "mapping": mapping}
+        tokenized_corpus = [_tokenize(c.text) for c in chunks]
+        mapping = [c.chunk_id for c in chunks]
+
+    data = {"tokenized_corpus": tokenized_corpus, "mapping": mapping}
 
     out_path = os.path.join(persist_dir, "bm25_data.pkl")
     with open(out_path, "wb") as f:
         pickle.dump(data, f)
 
-    return {"persist_path": out_path, "num_chunks": len(chunks)}
+    return {"persist_path": out_path, "num_chunks": len(mapping)}
 
 
 def load_bm25(persist_dir: Optional[str] = None) -> Tuple[Optional[object], List[str]]:
