@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -103,6 +103,37 @@ async def query_endpoint(q: str):
     try:
         res = query_pipeline(q, top_k=5)
         return JSONResponse(status_code=200, content=res)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/query")
+async def query_endpoint_post(request: Request, q: str | None = None):
+    try:
+        if not q:
+            # try JSON body
+            try:
+                body = await request.json()
+                if isinstance(body, dict):
+                    q = body.get("q") or q
+            except Exception:
+                pass
+
+            # try form data
+            if not q:
+                try:
+                    form = await request.form()
+                    q = form.get("q") or q
+                except Exception:
+                    pass
+
+        if not q:
+            raise HTTPException(status_code=400, detail="Missing query parameter 'q'")
+
+        res = query_pipeline(q, top_k=5)
+        return JSONResponse(status_code=200, content=res)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
