@@ -86,15 +86,35 @@ def query_pipeline(query: str, top_k: int = 5) -> Dict[str, Any]:
     unique_ids = list(dict.fromkeys(all_ids))
     chunk_map = fetch_chunks(unique_ids) if unique_ids else {}
 
+    # Fallback: load BM25 persisted documents to fill missing texts
+    try:
+        from backend.store.bm25_store import DEFAULT_PERSIST_DIR
+        import pickle, os
+        bm25_path = os.path.join(DEFAULT_PERSIST_DIR, "bm25_data.pkl")
+        if os.path.exists(bm25_path):
+            with open(bm25_path, "rb") as f:
+                bm25_data = pickle.load(f)
+            bm25_mapping = bm25_data.get("mapping", [])
+            bm25_docs = bm25_data.get("documents") or []
+            bm25_map = {k: v for k, v in zip(bm25_mapping, bm25_docs)}
+        else:
+            bm25_map = {}
+    except Exception:
+        bm25_map = {}
+
     def enrich(results):
         out = []
         for cid, score in results:
             info = chunk_map.get(cid, {})
+            text = info.get("text")
+            metadata = info.get("metadata")
+            if not text:
+                text = bm25_map.get(cid)
             out.append({
                 "chunk_id": cid,
                 "score": score,
-                "text": info.get("text"),
-                "metadata": info.get("metadata"),
+                "text": text,
+                "metadata": metadata,
             })
         return out
 
