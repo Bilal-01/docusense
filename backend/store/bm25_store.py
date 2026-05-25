@@ -128,16 +128,6 @@ def build_and_persist_bm25(chunks: Optional[List[Chunk]] = None, persist_dir: Op
         mapping = [c.chunk_id for c in chunks]
         docs = [c.text for c in chunks]
 
-    # Also persist documents when available (useful for enrichment)
-    docs = None
-    if chunks is None:
-        # when building from Chroma, we collected raw texts into mapping step
-        # but tokenized_corpus was built from those texts; we don't have separate docs list here
-        # leave docs as None
-        docs = None
-    else:
-        docs = [c.text for c in chunks]
-
     data = {"tokenized_corpus": tokenized_corpus, "mapping": mapping, "documents": docs}
 
     out_path = os.path.join(persist_dir, "bm25_data.pkl")
