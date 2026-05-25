@@ -106,16 +106,27 @@ def build_and_persist_bm25(chunks: Optional[List[Chunk]] = None, persist_dir: Op
                     for doc_id, doc_text in zip(ids, docs):
                         token_texts.append(_tokenize(doc_text))
                         mapping.append(doc_id)
+                        # collect raw docs for persistence
+                        try:
+                            docs_list.append(doc_text)
+                        except NameError:
+                            docs_list = [doc_text]
                 except Exception:
                     continue
 
             tokenized_corpus = token_texts
+            # ensure docs_list exists
+            try:
+                docs = docs_list
+            except NameError:
+                docs = None
         except Exception:
             tokenized_corpus = []
             mapping = []
     else:
         tokenized_corpus = [_tokenize(c.text) for c in chunks]
         mapping = [c.chunk_id for c in chunks]
+        docs = [c.text for c in chunks]
 
     # Also persist documents when available (useful for enrichment)
     docs = None
