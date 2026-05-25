@@ -117,7 +117,17 @@ def build_and_persist_bm25(chunks: Optional[List[Chunk]] = None, persist_dir: Op
         tokenized_corpus = [_tokenize(c.text) for c in chunks]
         mapping = [c.chunk_id for c in chunks]
 
-    data = {"tokenized_corpus": tokenized_corpus, "mapping": mapping}
+    # Also persist documents when available (useful for enrichment)
+    docs = None
+    if chunks is None:
+        # when building from Chroma, we collected raw texts into mapping step
+        # but tokenized_corpus was built from those texts; we don't have separate docs list here
+        # leave docs as None
+        docs = None
+    else:
+        docs = [c.text for c in chunks]
+
+    data = {"tokenized_corpus": tokenized_corpus, "mapping": mapping, "documents": docs}
 
     out_path = os.path.join(persist_dir, "bm25_data.pkl")
     with open(out_path, "wb") as f:
@@ -137,16 +147,17 @@ def load_bm25(persist_dir: Optional[str] = None) -> Tuple[Optional[object], List
 
     tokenized_corpus = data.get("tokenized_corpus", [])
     mapping = data.get("mapping", [])
+    documents = data.get("documents")
 
     if BM25Okapi is None:
-        return None, mapping, tokenized_corpus
+        return None, mapping, tokenized_corpus, documents
 
     bm25 = BM25Okapi(tokenized_corpus)
-    return bm25, mapping, tokenized_corpus
+    return bm25, mapping, tokenized_corpus, documents
 
 
 def query_bm25(query: str, top_n: int = 5, persist_dir: Optional[str] = None) -> List[Tuple[str, float]]:
-    bm25, mapping, tokenized_corpus = load_bm25(persist_dir=persist_dir)
+    bm25, mapping, tokenized_corpus, documents = load_bm25(persist_dir=persist_dir)
     if bm25 is not None:
         q_tokens = _tokenize(query)
         scores = bm25.get_scores(q_tokens)
