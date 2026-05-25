@@ -9,7 +9,6 @@ except Exception:
 
 def _list_collections() -> List[str]:
     try:
-        # Newer chroma may expose list_collections()
         cols = client.list_collections()
         if isinstance(cols, list):
             return [c.get("name") if isinstance(c, dict) else getattr(c, "name", None) for c in cols]
@@ -44,15 +43,29 @@ def dense_query_with_embedding(embedding: List[float], top_n: int = 5) -> List[T
     for name in collections:
         try:
             col = client.get_collection(name=name)
+            # skip empty collections
+            try:
+                if hasattr(col, "count") and col.count() == 0:
+                    continue
+            except Exception:
+                pass
             qres = col.query(query_embeddings=[embedding], n_results=top_n)
             # qres may contain ids and distances
             ids = qres.get("ids") if isinstance(qres, dict) else getattr(qres, "ids", None)
             distances = qres.get("distances") if isinstance(qres, dict) else getattr(qres, "distances", None)
             if ids:
-                # ids is a list of lists per query
-                for idx_list, dist_list in zip(ids, distances or []):
-                    for cid, score in zip(idx_list, dist_list):
-                        results.append((cid, float(score)))
+                # ids is often a list of lists (per-query). Normalize and flatten.
+                def _unwrap(val):
+                    if val is None:
+                        return []
+                    if isinstance(val, list) and val and isinstance(val[0], list):
+                        return [item for sub in val for item in sub]
+                    return val
+
+                ids_flat = _unwrap(ids)
+                dist_flat = _unwrap(distances) if distances is not None else [None] * len(ids_flat)
+                for cid, score in zip(ids_flat, dist_flat):
+                    results.append((cid, float(score) if score is not None else 0.0))
         except Exception:
             continue
 
