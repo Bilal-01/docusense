@@ -100,6 +100,21 @@ async def health_check():
 
 @app.get("/query")
 async def query_endpoint(q: str):
+    """Query documents using hybrid retrieval (dense + sparse with RRF fusion).
+    
+    Returns the top 10 results fused using Reciprocal Rank Fusion (RRF),
+    which combines dense semantic search (HyDE + ChromaDB) and sparse BM25 keyword search.
+    
+    Args:
+        q: Query string
+        
+    Returns:
+        JSON with 'results' key containing list of ranked chunks with:
+        - chunk_id: Unique chunk identifier
+        - score: RRF fused score (higher is better)
+        - text: Chunk text content
+        - metadata: Chunk metadata dict
+    """
     try:
         res = query_pipeline(q, top_k=5)
         return JSONResponse(status_code=200, content=res)
@@ -109,6 +124,19 @@ async def query_endpoint(q: str):
 
 @app.post("/query")
 async def query_endpoint_post(request: Request, q: str | None = None):
+    """Query documents using hybrid retrieval (dense + sparse with RRF fusion).
+    
+    Returns the top 10 results fused using Reciprocal Rank Fusion (RRF),
+    which combines dense semantic search (HyDE + ChromaDB) and sparse BM25 keyword search.
+    Supports query parameter 'q', JSON body with 'q' field, or form data with 'q' field.
+    
+    Returns:
+        JSON with 'results' key containing list of ranked chunks with:
+        - chunk_id: Unique chunk identifier
+        - score: RRF fused score (higher is better)
+        - text: Chunk text content
+        - metadata: Chunk metadata dict
+    """
     try:
         if not q:
             # try JSON body
