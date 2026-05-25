@@ -126,12 +126,12 @@ def build_and_persist_bm25(chunks: Optional[List[Chunk]] = None, persist_dir: Op
     return {"persist_path": out_path, "num_chunks": len(mapping)}
 
 
-def load_bm25(persist_dir: Optional[str] = None) -> Tuple[Optional[object], List[str]]:
+def load_bm25(persist_dir: Optional[str] = None) -> Tuple[Optional[object], List[str], List[List[str]]]:
     if persist_dir is None:
         persist_dir = DEFAULT_PERSIST_DIR
     path = os.path.join(persist_dir, "bm25_data.pkl")
     if not os.path.exists(path):
-        return None, []
+        return None, [], []
     with open(path, "rb") as f:
         data = pickle.load(f)
 
@@ -139,19 +139,34 @@ def load_bm25(persist_dir: Optional[str] = None) -> Tuple[Optional[object], List
     mapping = data.get("mapping", [])
 
     if BM25Okapi is None:
-        return None, mapping
+        return None, mapping, tokenized_corpus
 
     bm25 = BM25Okapi(tokenized_corpus)
-    return bm25, mapping
+    return bm25, mapping, tokenized_corpus
 
 
 def query_bm25(query: str, top_n: int = 5, persist_dir: Optional[str] = None) -> List[Tuple[str, float]]:
-    bm25, mapping = load_bm25(persist_dir=persist_dir)
-    if bm25 is None:
+    bm25, mapping, tokenized_corpus = load_bm25(persist_dir=persist_dir)
+    if bm25 is not None:
+        q_tokens = _tokenize(query)
+        scores = bm25.get_scores(q_tokens)
+        ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)[:top_n]
+        return [(mapping[i], float(score)) for i, score in ranked]
+
+    # Fallback: compute simple overlap scores if tokenized_corpus is available
+    if not tokenized_corpus or not mapping:
         return []
-    q_tokens = _tokenize(query)
-    scores = bm25.get_scores(q_tokens)
-    # get top indices
+
+    q_tokens = set(_tokenize(query))
+    scores = []
+    for tokens in tokenized_corpus:
+        if not tokens:
+            scores.append(0.0)
+            continue
+        # simple overlap score
+        overlap = len(q_tokens.intersection(tokens))
+        scores.append(float(overlap))
+
     ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)[:top_n]
     return [(mapping[i], float(score)) for i, score in ranked]
 
