@@ -14,6 +14,25 @@ except Exception:
     from hyde import hyde_embedding_for_query
     from dense_search import dense_query_with_embedding
 
+# Optional cross-encoder for reranking
+try:
+    from sentence_transformers import CrossEncoder
+except Exception:
+    CrossEncoder = None
+
+_CROSS_ENCODER = None
+
+def _get_cross_encoder():
+    global _CROSS_ENCODER
+    if CrossEncoder is None:
+        return None
+    if _CROSS_ENCODER is None:
+        try:
+            _CROSS_ENCODER = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+        except Exception:
+            _CROSS_ENCODER = None
+    return _CROSS_ENCODER
+
 
 def _apply_rrf_fusion(
     bm25_results: List[Tuple[str, float]],
@@ -93,37 +112,87 @@ def query_pipeline(query: str, top_k: int = 5) -> Dict[str, Any]:
                 groups.setdefault(doc_prefix, []).append(cid)
 
             res_map = {}
-            for doc_prefix, ids in groups.items():
+            try:
+                # list available collections once
                 try:
-                    col_name = get_collection_name(doc_prefix)
-                    col = client.get_or_create_collection(name=col_name)
-                    data = col.get(ids=ids)
-
-                    # normalize possible nested return shapes
-                    def _unwrap(val):
-                        if val is None:
-                            return []
-                        if isinstance(val, list):
-                            # If nested lists (per-query), flatten
-                            if val and isinstance(val[0], list):
-                                return [item for sub in val for item in sub]
-                            return val
-                        if isinstance(val, dict):
-                            return [val]
-                        return [val]
-
-                    ids_ret = _unwrap(data.get("ids") if isinstance(data, dict) else getattr(data, "ids", None))
-                    docs = _unwrap(data.get("documents") if isinstance(data, dict) else getattr(data, "documents", None))
-                    metadatas = _unwrap(data.get("metadatas") if isinstance(data, dict) else getattr(data, "metadatas", None))
-
-                    # If ids_ret is list of lists (edge case), it's already flattened by _unwrap
-                    for i, cid in enumerate(ids_ret):
-                        res_map[cid] = {
-                            "text": docs[i] if i < len(docs) else None,
-                            "metadata": metadatas[i] if metadatas and i < len(metadatas) else None,
-                        }
+                    cols = client.list_collections()
+                    existing = set(c.get("name") if isinstance(c, dict) else getattr(c, "name", None) for c in cols)
                 except Exception:
-                    continue
+                    existing = set()
+
+                for doc_prefix, ids in groups.items():
+                    col_name = get_collection_name(doc_prefix)
+                    col = None
+                    if col_name in existing:
+                        try:
+                            col = client.get_collection(name=col_name)
+                        except Exception:
+                            try:
+                                col = client.get_or_create_collection(name=col_name)
+                            except Exception:
+                                col = None
+                    else:
+                        # Collection name based on chunk prefix not found. Try to locate the
+                        # collection that contains this chunk id by scanning existing collections.
+                        for cand in existing:
+                            try:
+                                c = client.get_collection(name=cand)
+                                # quick probe
+                                # debug probe
+                                print(f"[pipeline] probing collection {cand} for id {ids[0]}")
+                                probe = c.get(ids=[ids[0]])
+                                probe_ids = probe.get("ids") if isinstance(probe, dict) else getattr(probe, "ids", None)
+                                if probe_ids:
+                                    col = c
+                                    print(f"[pipeline] found id {ids[0]} in collection {cand}")
+                                    break
+                            except Exception:
+                                continue
+
+                    for single_id in ids:
+                        try:
+                            if col is None:
+                                # nothing we can do for this prefix
+                                continue
+                            data = col.get(ids=[single_id])
+                            # try dict-like access first
+                            if isinstance(data, dict):
+                                ids_ret = data.get("ids") or []
+                                docs = data.get("documents") or []
+                                metadatas = data.get("metadatas") or []
+                            else:
+                                ids_ret = getattr(data, "ids", []) or []
+                                docs = getattr(data, "documents", []) or []
+                                metadatas = getattr(data, "metadatas", []) or []
+
+                            # normalize nested lists
+                            def _first_item(val):
+                                if not val:
+                                    return None
+                                if isinstance(val, list) and isinstance(val[0], list):
+                                    return val[0][0] if val[0] else None
+                                return val[0] if isinstance(val, list) else val
+
+                            doc_text = _first_item(docs)
+                            meta = _first_item(metadatas)
+                            # If doc_text is None but ids_ret contains string, attempt to match index
+                            if doc_text is None and ids_ret:
+                                try:
+                                    # flatten ids_ret
+                                    flat_ids = ids_ret[0] if isinstance(ids_ret[0], list) else ids_ret
+                                    if single_id in flat_ids:
+                                        idx = flat_ids.index(single_id)
+                                        doc_text = docs[idx] if idx < len(docs) else None
+                                        meta = metadatas[idx] if idx < len(metadatas) else None
+                                except Exception:
+                                    pass
+
+                            res_map[single_id] = {"text": doc_text, "metadata": meta}
+                        except Exception:
+                            continue
+            except Exception:
+                return {}
+
             return res_map
 
     except Exception:
@@ -156,6 +225,10 @@ def query_pipeline(query: str, top_k: int = 5) -> Dict[str, Any]:
             metadata = info.get("metadata")
             if not text:
                 text = bm25_map.get(cid)
+            # If metadata missing but we have a fallback text, create minimal metadata
+            if metadata is None and text is not None:
+                metadata = {"source": "bm25_fallback"}
+
             out.append({
                 "chunk_id": cid,
                 "score": rrf_score,
@@ -164,9 +237,33 @@ def query_pipeline(query: str, top_k: int = 5) -> Dict[str, Any]:
             })
         return out
 
-    return {
-        "results": enrich(fused_results),
-    }
+    # initial enriched top candidates (up to fused_results length, typically 10)
+    candidates = enrich(fused_results)
+
+    # Cross-encoder reranking: score (query, chunk_text) pairs and re-sort.
+    try:
+        ce = _get_cross_encoder()
+    except Exception:
+        ce = None
+
+    final = candidates
+    if ce is not None and candidates:
+        # prepare pairs
+        pairs = [(query, c.get("text") or "") for c in candidates]
+        try:
+            scores = ce.predict(pairs)
+            for c, s in zip(candidates, scores):
+                c["rerank_score"] = float(s)
+            # sort by cross-encoder score desc and keep top 5
+            final = sorted(candidates, key=lambda x: x.get("rerank_score", -1), reverse=True)[:5]
+        except Exception:
+            # fallback: take top 5 as-is
+            final = candidates[:5]
+    else:
+        # no cross-encoder available: keep top 5 by original RRF score
+        final = candidates[:5]
+
+    return {"results": final}
 
 
 __all__ = ["query_pipeline"]

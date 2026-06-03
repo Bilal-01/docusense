@@ -54,13 +54,25 @@ def embed_chunks(chunks: List[Chunk], doc_id: str) -> dict:
     embeddings = _embed_texts(texts)
     ids = [chunk.chunk_id for chunk in chunks]
     metadatas = [chunk.to_dict() for chunk in chunks]
+    # Debug info: print sizes to help diagnose empty upserts
+    try:
+        print(f"[embedder] upsert: collection={collection_name} ids={len(ids)} documents={len(texts)} metadatas={len(metadatas)} embeddings={len(embeddings) if embeddings is not None else 'None'}")
+    except Exception:
+        pass
 
-    collection.upsert(
-        ids=ids,
-        documents=texts,
-        metadatas=metadatas,
-        embeddings=embeddings,
-    )
+    try:
+        collection.upsert(
+            ids=ids,
+            documents=texts,
+            metadatas=metadatas,
+            embeddings=embeddings,
+        )
+    except Exception as e:
+        # Surface errors to logs to aid debugging
+        print(f"[embedder] upsert exception: {e}")
 
-    persist()
+    try:
+        persist()
+    except Exception:
+        pass
     return {"collection_name": collection_name, "inserted": len(chunks)}
