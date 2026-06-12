@@ -5,6 +5,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastapi import BackgroundTasks
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -29,9 +30,20 @@ app = FastAPI(
     version="0.1.0"
 )
 
+# initialize DB
+try:
+    from backend.store.db import init_db
+except Exception:
+    from store.db import init_db
+
+try:
+    init_db()
+except Exception:
+    pass
+
 
 @app.post("/upload")
-async def upload_document(file: UploadFile = File(...)) -> list[dict]:
+async def upload_document(file: UploadFile = File(...), background_tasks: BackgroundTasks = None) -> dict:
     """
     Upload, parse, and semantically chunk a document (PDF, DOCX, or TXT).
 
@@ -62,20 +74,38 @@ async def upload_document(file: UploadFile = File(...)) -> list[dict]:
         # Semantically chunk text blocks
         chunks = chunk_text_blocks(blocks)
 
-        # Embed and persist chunks to ChromaDB
+        # Embed and persist chunks to ChromaDB in background to speed response
         doc_id = os.path.splitext(file.filename)[0]
-        embed_chunks(chunks, doc_id)
+        if background_tasks is not None:
+            background_tasks.add_task(embed_chunks, chunks, doc_id)
+            background_tasks.add_task(build_and_persist_bm25, chunks)
+        else:
+            embed_chunks(chunks, doc_id)
+            try:
+                build_and_persist_bm25(chunks)
+            except Exception:
+                pass
 
-        # Build and persist BM25 index for the uploaded chunks
+        # persist doc metadata to SQLite
         try:
-            build_and_persist_bm25(chunks)
+            from backend.store.db import get_session, Document
+        except Exception:
+            from store.db import get_session, Document
+
+        try:
+            sess = get_session()
+            doc = sess.query(Document).filter(Document.doc_id == doc_id).first()
+            if not doc:
+                doc = Document(doc_id=doc_id, filename=file.filename, num_chunks=len(chunks))
+                sess.add(doc)
+            else:
+                doc.num_chunks = len(chunks)
+            sess.commit()
+            sess.close()
         except Exception:
             pass
 
-        # Convert Chunk objects to dictionaries
-        result = [chunk.to_dict() for chunk in chunks]
-
-        return result
+        return {"doc_id": doc_id, "num_chunks": len(chunks), "status": "uploaded"}
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -123,7 +153,7 @@ async def query_endpoint(q: str):
 
 
 @app.post("/query")
-async def query_endpoint_post(request: Request, q: str | None = None):
+async def query_endpoint_post(request: Request):
     """Query documents using hybrid retrieval (dense + sparse with RRF fusion).
     
     Returns the top 10 results fused using Reciprocal Rank Fusion (RRF),
@@ -138,28 +168,128 @@ async def query_endpoint_post(request: Request, q: str | None = None):
         - metadata: Chunk metadata dict
     """
     try:
-        if not q:
-            # try JSON body
+        # expect JSON body with `question` and `doc_id`
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:
             try:
-                body = await request.json()
-                if isinstance(body, dict):
-                    q = body.get("q") or q
+                form = await request.form()
+                body = dict(form)
             except Exception:
                 pass
 
-            # try form data
-            if not q:
-                try:
-                    form = await request.form()
-                    q = form.get("q") or q
-                except Exception:
-                    pass
+        question = body.get("question") or body.get("q")
+        doc_id = body.get("doc_id") or body.get("docId")
+        if not question:
+            raise HTTPException(status_code=400, detail="Missing 'question' in request body")
+        # Run retrieval pipeline to get candidate chunks
+        res = query_pipeline(question, top_k=5)
+        candidates = res.get("results", [])
 
-        if not q:
-            raise HTTPException(status_code=400, detail="Missing query parameter 'q'")
+        # select top 5 (pipeline already returns top 5 after rerank)
+        top_chunks = candidates[:5]
 
-        res = query_pipeline(q, top_k=5)
-        return JSONResponse(status_code=200, content=res)
+        # prepare chunk_inputs with full metadata for LLM polisher
+        chunk_inputs = []
+        for c in top_chunks:
+            cid = c.get("chunk_id")
+            text = c.get("text")
+            meta = c.get("metadata") or {}
+            chunk_inputs.append({
+                "chunk_id": cid,
+                "text": text,
+                "page": meta.get("page_number") or meta.get("page"),
+                "char_start": meta.get("char_start"),
+                "char_end": meta.get("char_end"),
+                "score": c.get("score"),
+            })
+
+        # Use LLM to generate polished answer with source tracking
+        try:
+            try:
+                from backend.retrieval.llm_polisher import polish_answer_with_sources
+            except Exception:
+                from retrieval.llm_polisher import polish_answer_with_sources
+
+            polished_answer, source_tracking = polish_answer_with_sources(question, chunk_inputs)
+        except Exception as e:
+            # Fallback if LLM fails: concatenate first 2 chunks
+            polished_answer = " ".join([c.get("text", "")[:50] for c in chunk_inputs[:2]])
+            source_tracking = []
+            print(f"[main] LLM polishing failed: {e}")
+
+        # Compute ragas scores for faithfulness and relevancy
+        try:
+            try:
+                from backend.retrieval.attribution import compute_ragas_faithfulness
+            except Exception:
+                from retrieval.attribution import compute_ragas_faithfulness
+
+            answer_text = polished_answer
+            contexts = [c.get("text") for c in chunk_inputs]
+            ragas_res = compute_ragas_faithfulness(question, answer_text, contexts)
+        except Exception:
+            ragas_res = None
+
+        # Parse ragas results
+        faith_val = None
+        rel_val = None
+        if isinstance(ragas_res, (tuple, list)):
+            try:
+                faith_val, rel_val = ragas_res[0], ragas_res[1]
+            except Exception:
+                faith_val, rel_val = None, None
+        elif isinstance(ragas_res, dict):
+            faith_val = ragas_res.get("faithfulness") or ragas_res.get("faithfulness_score")
+            rel_val = ragas_res.get("relevancy") or ragas_res.get("answer_relevancy")
+
+        # Build answer_chunks from source tracking
+        answer_chunks = []
+        if source_tracking:
+            # Group source tracking by unique chunk_id and build answer_chunks
+            chunk_tracking_map = {}
+            for s in source_tracking:
+                cid = s.get("chunk_id")
+                if cid not in chunk_tracking_map:
+                    chunk_tracking_map[cid] = {
+                        "char_start": s.get("char_start"),
+                        "char_end": s.get("char_end"),
+                        "source_refs": [{
+                            "chunk_id": cid,
+                            "page": s.get("page"),
+                            "char_start": s.get("original_char_start"),
+                            "char_end": s.get("original_char_end"),
+                        }]
+                    }
+
+            for cid, tracking in chunk_tracking_map.items():
+                answer_chunks.append({
+                    "text": polished_answer[tracking["char_start"]:tracking["char_end"]],
+                    "source_refs": tracking["source_refs"],
+                    "answer_char_start": tracking["char_start"],
+                    "answer_char_end": tracking["char_end"],
+                })
+        else:
+            # Fallback: include whole answer with first chunk as reference
+            first_chunk = chunk_inputs[0] if chunk_inputs else {}
+            answer_chunks.append({
+                "text": polished_answer,
+                "source_refs": [{
+                    "chunk_id": first_chunk.get("chunk_id", "unknown"),
+                    "page": first_chunk.get("page"),
+                    "char_start": first_chunk.get("char_start"),
+                    "char_end": first_chunk.get("char_end"),
+                }]
+            })
+
+        out = {
+            "answer": polished_answer,
+            "faithfulness_score": faith_val,
+            "answer_relevancy": rel_val,
+            "source_chunks": answer_chunks,
+        }
+        return JSONResponse(status_code=200, content=out)
     except HTTPException:
         raise
     except Exception as e:

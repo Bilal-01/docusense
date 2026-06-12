@@ -27,15 +27,32 @@ def _embed_texts(texts: List[str]) -> List[List[float]]:
     if not texts:
         return []
 
-    if not OLLAMA_HOST:
-        raise EnvironmentError("OLLAMA_HOST must be configured for Ollama embedding generation")
-
     embeddings = []
-    with ollama.Client(host=OLLAMA_HOST) as client:
-        for batch in _batch_items(texts, batch_size=OLLAMA_BATCH_SIZE):
-            response = client.embed(model=OLLAMA_MODEL, input=list(batch))
-            embeddings.extend(response.embeddings)
 
+    # First try using the Ollama Client (recommended when OLLAMA_HOST is set)
+    try:
+        if OLLAMA_HOST:
+            with ollama.Client(host=OLLAMA_HOST) as client:
+                for batch in _batch_items(texts, batch_size=OLLAMA_BATCH_SIZE):
+                    response = client.embed(model=OLLAMA_MODEL, input=list(batch))
+                    embeddings.extend(getattr(response, "embeddings", []))
+            if embeddings:
+                return embeddings
+    except Exception as e:
+        print(f"[embedder] Ollama Client embed failed: {e}")
+
+    # Fallback: try module-level ollama.embed (some versions expose this)
+    try:
+        for batch in _batch_items(texts, batch_size=OLLAMA_BATCH_SIZE):
+            resp = ollama.embed(OLLAMA_MODEL, list(batch))
+            embeddings.extend(getattr(resp, "embeddings", []))
+        if embeddings:
+            return embeddings
+    except Exception as e:
+        print(f"[embedder] ollama.embed fallback failed: {e}")
+
+    # If we reach here, return empty list to avoid crashing the caller
+    print("[embedder] Warning: no embeddings produced by Ollama.")
     return embeddings
 
 

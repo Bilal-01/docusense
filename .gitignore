@@ -10,3 +10,4 @@ __pycache__
 .chroma/
 *.pkl
 *.bm25
+*.db
