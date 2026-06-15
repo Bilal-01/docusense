@@ -1,95 +1,57 @@
 import os
-from typing import List, Sequence
+from typing import List
 
-import ollama
+import google.generativeai as genai
 from dotenv import load_dotenv
 
 from .models import Chunk
 
 try:
-    from backend.store.chroma_store import get_collection_name, get_or_create_collection, persist
+    from backend.store.chroma_store import get_collection_name, get_or_create_collection
 except ModuleNotFoundError:
-    from store.chroma_store import get_collection_name, get_or_create_collection, persist
+    from store.chroma_store import get_collection_name, get_or_create_collection
 
-load_dotenv(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".env")))
+load_dotenv()
 
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text:latest")
-OLLAMA_BATCH_SIZE = int(os.getenv("OLLAMA_EMBEDDING_BATCH_SIZE", "100"))
+genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 
-
-def _batch_items(items: List, batch_size: int):
-    for i in range(0, len(items), batch_size):
-        yield items[i:i + batch_size]
+_EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "models/text-embedding-004")
+_BATCH_SIZE = int(os.getenv("GEMINI_EMBEDDING_BATCH_SIZE", "100"))
 
 
 def _embed_texts(texts: List[str]) -> List[List[float]]:
-    if not texts:
-        return []
-
-    embeddings = []
-
-    # First try using the Ollama Client (recommended when OLLAMA_HOST is set)
-    try:
-        if OLLAMA_HOST:
-            with ollama.Client(host=OLLAMA_HOST) as client:
-                for batch in _batch_items(texts, batch_size=OLLAMA_BATCH_SIZE):
-                    response = client.embed(model=OLLAMA_MODEL, input=list(batch))
-                    embeddings.extend(getattr(response, "embeddings", []))
-            if embeddings:
-                return embeddings
-    except Exception as e:
-        print(f"[embedder] Ollama Client embed failed: {e}")
-
-    # Fallback: try module-level ollama.embed (some versions expose this)
-    try:
-        for batch in _batch_items(texts, batch_size=OLLAMA_BATCH_SIZE):
-            resp = ollama.embed(OLLAMA_MODEL, list(batch))
-            embeddings.extend(getattr(resp, "embeddings", []))
-        if embeddings:
-            return embeddings
-    except Exception as e:
-        print(f"[embedder] ollama.embed fallback failed: {e}")
-
-    # If we reach here, return empty list to avoid crashing the caller
-    print("[embedder] Warning: no embeddings produced by Ollama.")
+    """Embed a list of texts using Gemini text-embedding-004."""
+    embeddings: List[List[float]] = []
+    for i in range(0, len(texts), _BATCH_SIZE):
+        batch = texts[i : i + _BATCH_SIZE]
+        result = genai.embed_content(
+            model=_EMBEDDING_MODEL,
+            content=batch,
+            task_type="retrieval_document",
+        )
+        embeddings.extend(result["embedding"])
     return embeddings
 
 
 def embed_chunks(chunks: List[Chunk], doc_id: str) -> dict:
-    """Embed chunks with Ollama and write them to persistent ChromaDB."""
+    """Embed chunks and upsert into ChromaDB. Raises on any failure."""
     if not chunks:
         return {"collection_name": get_collection_name(doc_id), "inserted": 0}
 
+    texts = [c.text for c in chunks]
+    ids = [c.chunk_id for c in chunks]
+    metadatas = [c.to_metadata() for c in chunks]  # FIX: no text in metadata
+    embeddings = _embed_texts(texts)
+
     collection_name = get_collection_name(doc_id)
-    collection = get_or_create_collection(
-        name=collection_name,
-        metadata={"document_id": doc_id}
+    collection = get_or_create_collection(collection_name, metadata={"document_id": doc_id})
+
+    # FIX: no try/except — let failures propagate so the caller knows the upsert failed
+    collection.upsert(
+        ids=ids,
+        documents=texts,
+        metadatas=metadatas,
+        embeddings=embeddings,
     )
 
-    texts = [chunk.text for chunk in chunks]
-    embeddings = _embed_texts(texts)
-    ids = [chunk.chunk_id for chunk in chunks]
-    metadatas = [chunk.to_dict() for chunk in chunks]
-    # Debug info: print sizes to help diagnose empty upserts
-    try:
-        print(f"[embedder] upsert: collection={collection_name} ids={len(ids)} documents={len(texts)} metadatas={len(metadatas)} embeddings={len(embeddings) if embeddings is not None else 'None'}")
-    except Exception:
-        pass
-
-    try:
-        collection.upsert(
-            ids=ids,
-            documents=texts,
-            metadatas=metadatas,
-            embeddings=embeddings,
-        )
-    except Exception as e:
-        # Surface errors to logs to aid debugging
-        print(f"[embedder] upsert exception: {e}")
-
-    try:
-        persist()
-    except Exception:
-        pass
     return {"collection_name": collection_name, "inserted": len(chunks)}

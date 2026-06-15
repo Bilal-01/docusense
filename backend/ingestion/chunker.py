@@ -1,133 +1,63 @@
+import tiktoken
 from typing import List
-
-# Prefer exact token counts via tiktoken; fall back to heuristic if unavailable
-try:
-    import tiktoken
-    _TIKTOKEN_ENCODING = tiktoken.get_encoding("cl100k_base")
-except Exception:
-    _TIKTOKEN_ENCODING = None
-
-
-def count_tokens(text: str) -> int:
-    if _TIKTOKEN_ENCODING is not None:
-        try:
-            return len(_TIKTOKEN_ENCODING.encode(text))
-        except Exception:
-            return max(1, len(text) // 4)
-    return max(1, len(text) // 4)
-from llama_index.core.node_parser import SemanticSplitterNodeParser
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.core.schema import Document
 
 from .models import TextBlock, Chunk
 
+# Module-level singleton — loaded once, shared across all calls
+_ENC = tiktoken.get_encoding("cl100k_base")
+
+CHUNK_SIZE = 300   # tokens
+OVERLAP = 50       # tokens
+
 
 def chunk_text_blocks(
-    text_blocks: List[TextBlock],
-    target_chunk_size: int = 300,
-    breakpoint_percentile_threshold: int = 95
+    blocks: List[TextBlock],
+    chunk_size: int = CHUNK_SIZE,
+    overlap: int = OVERLAP,
 ) -> List[Chunk]:
     """
-    Semantically chunk text blocks using LlamaIndex SemanticSplitterNodeParser.
+    Split text blocks into overlapping token-window chunks.
 
-    Uses sentence embeddings to detect semantic boundaries and only splits when
-    meaning changes significantly. Generates deterministic chunk IDs and preserves
-    position metadata for document highlighting.
-
-    Args:
-        text_blocks: Parser output (List[TextBlock]) from parse_document()
-        target_chunk_size: Target chunk size in tokens (200-400 recommended)
-        breakpoint_percentile_threshold: Similarity percentile for split detection (0-100)
-                                        95 = only split at 95th percentile differences (conservative)
-
-    Returns:
-        List of Chunk objects with deterministic IDs and position metadata
+    Uses tiktoken for exact token counts and precise character offset tracking.
+    Character offsets are computed by decoding the prefix token sequence, which
+    gives exact positions without any approximation or fuzzy matching.
     """
-
-    # Initialize embedding model (HuggingFace sentence-transformers)
-    embedding_model = HuggingFaceEmbedding(
-        model_name="BAAI/bge-small-en-v1.5"  # Lightweight, fast model
-    )
-
-    # Initialize semantic splitter
-    semantic_splitter = SemanticSplitterNodeParser(
-        buffer_size=1,
-        breakpoint_percentile_threshold=breakpoint_percentile_threshold,
-        embed_model=embedding_model
-    )
-
     chunks: List[Chunk] = []
-    global_chunk_index = 0
+    global_index = 0
 
-    for block in text_blocks:
-        # Convert TextBlock to LlamaIndex Document format
-        doc = Document(
-            text=block.text,
-            metadata={
-                "document_name": block.document_name,
-                "page_number": block.page_number,
-                "section_heading": block.section_heading,
-                "source_file": block.source_file
-            }
-        )
-
-        # Apply semantic splitting
-        semantic_nodes = semantic_splitter.get_nodes_from_documents([doc])
-
-        if not semantic_nodes:
+    for block in blocks:
+        if not block.text.strip():
             continue
 
-        # Track cumulative position in original text
-        text_len = len(block.text)
-        char_position = 0
+        doc_name = block.document_name.rsplit(".", 1)[0]
+        tokens = _ENC.encode(block.text)
+        i = 0
 
-        for node in semantic_nodes:
-            node_text = node.get_content().strip()
-            if not node_text:
+        while i < len(tokens):
+            window = tokens[i : i + chunk_size]
+            chunk_text = _ENC.decode(window).strip()
+
+            if not chunk_text:
+                i += chunk_size - overlap
                 continue
 
-            # Find this chunk's position in the remaining text
-            # Try exact match first, then broader search
-            remaining_text = block.text[char_position:]
-            found_idx = remaining_text.find(node_text)
+            # Precise char offsets: decode the prefix to find exact positions.
+            # This is deterministic and never approximates.
+            char_start = len(_ENC.decode(tokens[:i]))
+            char_end = len(_ENC.decode(tokens[: i + len(window)]))
 
-            if found_idx >= 0:
-                # Found exact match
-                char_start = char_position + found_idx
-                char_end = char_start + len(node_text)
-                char_position = char_end
-            else:
-                # Exact match not found (node text might be trimmed/modified)
-                # Use approximate position based on node content matching
-                char_start = char_position
-                char_end = min(char_position + len(node_text), text_len)
-                char_position = char_end
-
-            # Clamp to valid range
-            char_start = max(0, min(char_start, text_len))
-            char_end = max(char_start, min(char_end, text_len))
-
-            # Accurate token count using tokenizer when available
-            token_count = count_tokens(node_text)
-
-            # Generate deterministic chunk ID
-            # Strip extension from document name for cleaner IDs
-            doc_name = block.document_name.rsplit('.', 1)[0]
-            chunk_id = f"{doc_name}_p{block.page_number}_c{global_chunk_index}"
-
-            # Create Chunk object
-            chunk = Chunk(
-                chunk_id=chunk_id,
-                text=node_text,
+            chunks.append(Chunk(
+                chunk_id=f"{doc_name}_p{block.page_number}_c{global_index}",
+                text=chunk_text,
                 source_doc=block.document_name,
                 page_number=block.page_number,
                 section=block.section_heading,
                 char_start=char_start,
                 char_end=char_end,
-                token_count=token_count
-            )
+                token_count=len(window),
+            ))
 
-            chunks.append(chunk)
-            global_chunk_index += 1
+            global_index += 1
+            i += chunk_size - overlap
 
     return chunks
