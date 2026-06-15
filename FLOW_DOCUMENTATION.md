@@ -48,27 +48,6 @@ retrieval/pipeline.py:query_pipeline()
 - `ChromaDB` from `store/chroma_store.py` - dense similarity search
 - `CrossEncoder` - semantic relevance scoring (if installed)
 
-#### Step 2: LLM Polishing with Source Tracking (llm_polisher.py)
-```python
-polish_answer_with_sources(question, chunks) 
-→ (polished_answer, source_tracking)
-```
-
-**How it works**:
-1. Format chunks with labels: `[Source 1] text...`, `[Source 2] text...`
-2. Send to Ollama LLM with prompt:
-   ```
-   Question: {question}
-   Relevant sources: [labeled chunks]
-   Instructions:
-   - Generate concise answer using ONLY source info
-   - Cite sources like [Source 1] or [Source 1, 2]
-   - Paraphrase naturally
-   ```
-3. LLM returns polished conversational answer with citations
-4. Parse `[Source N]` citations to map to chunk indices
-5. Return: (polished_answer, source_tracking_list)
-
 **Source Tracking Output**:
 ```python
 [
@@ -122,14 +101,6 @@ response = {
 ---
 
 ## Key Components Modified
-
-### New Files
-
-1. **`backend/retrieval/llm_polisher.py`**
-   - `polish_answer_with_sources()` - Main polishing & tracking function
-   - `call_ollama_llm()` - Wrapper for Ollama client/CLI
-   - `_track_sources()` - Parse citations and map to char positions
-
 ### Modified Files
 
 1. **`backend/main.py`** (`/query` POST)

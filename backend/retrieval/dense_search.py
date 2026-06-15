@@ -1,77 +1,54 @@
-import os
+import logging
 from typing import List, Tuple
 
 try:
-    from backend.store.chroma_store import client
-except Exception:
     from store.chroma_store import client
+except ModuleNotFoundError:
+    from backend.store.chroma_store import client
+
+_LOG = logging.getLogger(__name__)
 
 
-def _list_collections() -> List[str]:
+def dense_query_with_embedding(
+    embedding: List[float], top_n: int = 20
+) -> List[Tuple[str, float]]:
+    """
+    Query all ChromaDB collections with the given embedding.
+
+    Returns (chunk_id, distance) pairs sorted ascending — lower distance
+    means higher similarity. Callers that use RRF must rank accordingly
+    (rank 1 = first item in this list = best match).
+    """
     try:
-        cols = client.list_collections()
-        if isinstance(cols, list):
-            return [c.get("name") if isinstance(c, dict) else getattr(c, "name", None) for c in cols]
-    except Exception:
-        pass
-    # Fallback: attempt to read sqlite metadata file if present
-    try:
-        # client._persist_directory is internal; try common attr
-        persist_dir = getattr(client, "persist_directory", None)
-        if not persist_dir:
-            persist_dir = getattr(client, "settings", {}).get("persist_directory") if hasattr(client, "settings") else None
-        if persist_dir:
-            # list folders
-            for name in os.listdir(persist_dir):
-                if name == "chroma.sqlite3":
-                    continue
-            # cannot reliably list collections; return empty
-    except Exception:
-        pass
-    return []
-
-
-def dense_query_with_embedding(embedding: List[float], top_n: int = 5) -> List[Tuple[str, float]]:
-    """Query all collections using provided embedding. Returns list of (id, score).
-    If no collections discoverable, returns empty list."""
-    results = []
-    collections = _list_collections()
-    if not collections:
-        # Attempt to query default collection names if known
+        collections = client.list_collections()
+    except Exception as e:
+        _LOG.error(f"ChromaDB list_collections failed: {e}")
         return []
 
-    for name in collections:
-        try:
-            col = client.get_collection(name=name)
-            # skip empty collections
-            try:
-                if hasattr(col, "count") and col.count() == 0:
-                    continue
-            except Exception:
-                pass
-            qres = col.query(query_embeddings=[embedding], n_results=top_n)
-            # qres may contain ids and distances
-            ids = qres.get("ids") if isinstance(qres, dict) else getattr(qres, "ids", None)
-            distances = qres.get("distances") if isinstance(qres, dict) else getattr(qres, "distances", None)
-            if ids:
-                # ids is often a list of lists (per-query). Normalize and flatten.
-                def _unwrap(val):
-                    if val is None:
-                        return []
-                    if isinstance(val, list) and val and isinstance(val[0], list):
-                        return [item for sub in val for item in sub]
-                    return val
+    results: List[Tuple[str, float]] = []
 
-                ids_flat = _unwrap(ids)
-                dist_flat = _unwrap(distances) if distances is not None else [None] * len(ids_flat)
-                for cid, score in zip(ids_flat, dist_flat):
-                    results.append((cid, float(score) if score is not None else 0.0))
-        except Exception:
+    for col_info in collections:
+        # Handle both object-style (ChromaDB 0.4+) and dict-style responses
+        if isinstance(col_info, str):
+            name = col_info
+        elif isinstance(col_info, dict):
+            name = col_info.get("name")
+        else:
+            name = getattr(col_info, "name", None)
+
+        if not name:
             continue
 
-    # sort by score descending (higher is better depending on chroma settings)
-    results = sorted(results, key=lambda x: x[1], reverse=True)[:top_n]
-    return results
+        try:
+            col = client.get_collection(name=name)
+            res = col.query(query_embeddings=[embedding], n_results=top_n)
+            # ChromaDB always returns list-of-lists (one per query embedding)
+            ids = res["ids"][0]
+            distances = res["distances"][0]
+            results.extend(zip(ids, distances))
+        except Exception as e:
+            _LOG.warning(f"Query failed on collection '{name}': {e}")
 
-
-__all__ = ["dense_query_with_embedding"]
+    # Sort ascending: lower distance = more similar = better rank
+    results.sort(key=lambda x: x[1])
+    return results[:top_n]

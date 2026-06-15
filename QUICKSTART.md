@@ -260,7 +260,6 @@ docusense/
 │   │   └── parser.py          # PDF/DOCX/TXT parsing
 │   ├── retrieval/             # Query pipeline
 │   │   ├── pipeline.py        # Hybrid search + RRF
-│   │   ├── llm_polisher.py    # LLM polishing + source tracking ← KEY FILE
 │   │   ├── generator.py       # Answer generation (legacy)
 │   │   └── attribution.py     # Ragas scoring
 │   └── store/                 # Data storage

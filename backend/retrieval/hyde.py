@@ -1,53 +1,34 @@
+import logging
 import os
-from typing import Tuple
+from typing import List
 
-import ollama
+import google.generativeai as genai
 from dotenv import load_dotenv
 
-load_dotenv(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".env")))
+load_dotenv()
+genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
-OLLAMA_LLM_MODEL = os.getenv("OLLAMA_LLM_MODEL", "llama2")
+_LLM_MODEL = os.getenv("GEMINI_LLM_MODEL", "gemini-2.0-flash")
+_LOG = logging.getLogger(__name__)
+
+_PROMPT = (
+    "Write a short factual paragraph that would answer the following question. "
+    "Be specific and concise. Do not say you don't know.\n\nQuestion: {query}"
+)
 
 
-def hyde_hypothetical_answer(query: str) -> str:
-    prompt = (
-        f"Write a short hypothetical paragraph that would answer this question: {query}. "
-        "Do not say you don't know. Just write a plausible answer."
-    )
-
+def hyde_embedding_for_query(query: str) -> List[float]:
+    """
+    Generate a hypothetical document for the query and return its embedding.
+    The embedding is used for dense retrieval in place of the raw query embedding.
+    """
     try:
-        with ollama.Client(host=OLLAMA_HOST) as client:
-            # Try common generation API names
-            try:
-                res = client.generate(model=OLLAMA_LLM_MODEL, prompt=prompt)
-            except Exception:
-                try:
-                    res = client.chat(model=OLLAMA_LLM_MODEL, prompt=prompt)
-                except Exception:
-                    res = None
+        from ingestion.embedder import _embed_texts
+    except ModuleNotFoundError:
+        from backend.ingestion.embedder import _embed_texts
 
-            if res is None:
-                return prompt
+    model = genai.GenerativeModel(_LLM_MODEL)
+    hypothetical = model.generate_content(_PROMPT.format(query=query)).text.strip()
 
-            # Attempt to extract text content from response object
-            text = None
-            for attr in ("text", "content", "output", "response"):
-                text = getattr(res, attr, None)
-                if isinstance(text, str) and text:
-                    return text
-
-            # Fallback to string representation
-            return str(res)
-    except Exception:
-        return prompt
-
-
-def hyde_embedding_for_query(query: str, embed_fn) -> list:
-    """Generate hypothetical answer and return its embedding using embed_fn(func that accepts list[str])."""
-    hypo = hyde_hypothetical_answer(query)
-    embeddings = embed_fn([hypo])
+    embeddings = _embed_texts([hypothetical])
     return embeddings[0] if embeddings else []
-
-
-__all__ = ["hyde_hypothetical_answer", "hyde_embedding_for_query"]
