@@ -142,7 +142,7 @@ def load_bm25(persist_dir: Optional[str] = None) -> Tuple[Optional[object], List
         persist_dir = DEFAULT_PERSIST_DIR
     path = os.path.join(persist_dir, "bm25_data.pkl")
     if not os.path.exists(path):
-        return None, [], []
+        return None, [], [], []
     with open(path, "rb") as f:
         data = pickle.load(f)
 
@@ -153,8 +153,18 @@ def load_bm25(persist_dir: Optional[str] = None) -> Tuple[Optional[object], List
     if BM25Okapi is None:
         return None, mapping, tokenized_corpus, documents
 
-    bm25 = BM25Okapi(tokenized_corpus)
-    return bm25, mapping, tokenized_corpus, documents
+    # Filter out empty token lists — BM25Okapi crashes on a corpus with no terms
+    filtered = [
+        (tokens, mid, doc)
+        for tokens, mid, doc in zip(tokenized_corpus, mapping, documents or [])
+        if tokens
+    ]
+    if not filtered:
+        return None, [], [], []
+
+    tokenized_corpus, mapping, docs_list = zip(*filtered)
+    bm25 = BM25Okapi(list(tokenized_corpus))
+    return bm25, list(mapping), list(tokenized_corpus), list(docs_list)
 
 
 def query_bm25(query: str, top_n: int = 5, persist_dir: Optional[str] = None) -> List[Tuple[str, float]]:

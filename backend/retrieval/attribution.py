@@ -66,18 +66,19 @@ def compute_ragas_faithfulness(
     contexts: List[str],
 ) -> Tuple[Optional[float], Optional[float]]:
     """
-    Evaluate faithfulness and answer relevancy using RAGAS with Gemini as judge.
-    Returns (faithfulness, answer_relevancy). Both are None if evaluation fails.
+    Evaluate faithfulness and answer relevancy using RAGAS with Groq as judge.
+    Uses llama-3.1-8b-instant deliberately — it is faster and has 14,400 req/day
+    free, preserving the 70B model's rate limit for user-facing generation.
     """
     try:
         from datasets import Dataset
         from ragas import evaluate
         from ragas.metrics import faithfulness, answer_relevancy
-        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_groq import ChatGroq
 
-        llm = ChatGoogleGenerativeAI(
-            model=os.getenv("GEMINI_LLM_MODEL", "gemini-2.0-flash"),
-            google_api_key=os.environ["GEMINI_API_KEY"],
+        llm = ChatGroq(
+            model="llama-3.1-8b-instant",   # 14,400 req/day free — use for scoring
+            api_key=os.environ["GROQ_API_KEY"],
         )
 
         dataset = Dataset.from_dict({

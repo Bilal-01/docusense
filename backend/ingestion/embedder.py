@@ -1,7 +1,7 @@
 import os
 from typing import List
 
-import google.generativeai as genai
+from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 
 from .models import Chunk
@@ -13,24 +13,13 @@ except ModuleNotFoundError:
 
 load_dotenv()
 
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-
-_EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "models/text-embedding-004")
-_BATCH_SIZE = int(os.getenv("GEMINI_EMBEDDING_BATCH_SIZE", "100"))
+# Loaded once at import time — stays in memory across requests
+_MODEL = SentenceTransformer(os.getenv("EMBED_MODEL", "BAAI/bge-base-en-v1.5"))
 
 
 def _embed_texts(texts: List[str]) -> List[List[float]]:
-    """Embed a list of texts using Gemini text-embedding-004."""
-    embeddings: List[List[float]] = []
-    for i in range(0, len(texts), _BATCH_SIZE):
-        batch = texts[i : i + _BATCH_SIZE]
-        result = genai.embed_content(
-            model=_EMBEDDING_MODEL,
-            content=batch,
-            task_type="retrieval_document",
-        )
-        embeddings.extend(result["embedding"])
-    return embeddings
+    """Embed texts locally. normalize_embeddings=True makes L2 == cosine distance."""
+    return _MODEL.encode(texts, normalize_embeddings=True).tolist()
 
 
 def embed_chunks(chunks: List[Chunk], doc_id: str) -> dict:
@@ -40,18 +29,13 @@ def embed_chunks(chunks: List[Chunk], doc_id: str) -> dict:
 
     texts = [c.text for c in chunks]
     ids = [c.chunk_id for c in chunks]
-    metadatas = [c.to_metadata() for c in chunks]  # FIX: no text in metadata
+    metadatas = [c.to_metadata() for c in chunks]
     embeddings = _embed_texts(texts)
 
-    collection_name = get_collection_name(doc_id)
-    collection = get_or_create_collection(collection_name, metadata={"document_id": doc_id})
-
-    # FIX: no try/except — let failures propagate so the caller knows the upsert failed
-    collection.upsert(
-        ids=ids,
-        documents=texts,
-        metadatas=metadatas,
-        embeddings=embeddings,
-    )
+    doc_id_clean = doc_id.rsplit(".", 1)[0]
+    collection_name = get_collection_name(doc_id_clean)
+    collection = get_or_create_collection(collection_name, metadata={"document_id": doc_id_clean})
+    
+    collection.upsert(ids=ids, documents=texts, metadatas=metadatas, embeddings=embeddings)
 
     return {"collection_name": collection_name, "inserted": len(chunks)}

@@ -84,6 +84,7 @@ def _fetch_chunks(chunk_ids: List[str]) -> Dict[str, Dict]:
 
     return result
 
+cols = chroma_client.list_collections()
 
 def query_pipeline(question: str, top_k: int = 5) -> Dict[str, Any]:
     """

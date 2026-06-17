@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi import BackgroundTasks
+import traceback
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -70,6 +71,10 @@ async def upload_document(file: UploadFile = File(...), background_tasks: Backgr
 
         # Parse document into text blocks
         blocks = parse_document(temp_path, file_type=file_ext.lstrip('.'))
+
+        for block in blocks:
+            block.document_name = file.filename
+
 
         # Semantically chunk text blocks
         chunks = chunk_text_blocks(blocks)
@@ -160,6 +165,7 @@ async def query_endpoint(request: Request):
     try:
         return JSONResponse(query_pipeline(question, top_k=5))
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(500, str(e))
 
 if __name__ == "__main__":

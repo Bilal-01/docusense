@@ -2,13 +2,13 @@ import logging
 import os
 from typing import List
 
-import google.generativeai as genai
+from groq import Groq
 from dotenv import load_dotenv
 
 load_dotenv()
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 
-_LLM_MODEL = os.getenv("GEMINI_LLM_MODEL", "gemini-2.0-flash")
+_CLIENT = Groq(api_key=os.environ["GROQ_API_KEY"])
+_LLM_MODEL = os.getenv("GROQ_LLM_MODEL", "llama-3.3-70b-versatile")
 _LOG = logging.getLogger(__name__)
 
 _PROMPT = (
@@ -20,15 +20,17 @@ _PROMPT = (
 def hyde_embedding_for_query(query: str) -> List[float]:
     """
     Generate a hypothetical document for the query and return its embedding.
-    The embedding is used for dense retrieval in place of the raw query embedding.
     """
     try:
         from ingestion.embedder import _embed_texts
     except ModuleNotFoundError:
         from backend.ingestion.embedder import _embed_texts
 
-    model = genai.GenerativeModel(_LLM_MODEL)
-    hypothetical = model.generate_content(_PROMPT.format(query=query)).text.strip()
+    response = _CLIENT.chat.completions.create(
+        model=_LLM_MODEL,
+        messages=[{"role": "user", "content": _PROMPT.format(query=query)}],
+    )
+    hypothetical = response.choices[0].message.content.strip()
 
     embeddings = _embed_texts([hypothetical])
     return embeddings[0] if embeddings else []
