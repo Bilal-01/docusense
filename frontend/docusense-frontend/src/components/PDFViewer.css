@@ -1,0 +1,82 @@
+.pdf-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #22262f;
+}
+
+.pdf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.pdf-toolbar button {
+  width: 28px;
+  height: 28px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s;
+}
+
+.pdf-toolbar button:hover { border-color: var(--accent); color: var(--accent); }
+
+.pdf-toolbar span {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  min-width: 38px;
+  text-align: center;
+}
+
+.pdf-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.pdf-page-wrap {
+  position: relative;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+  border-radius: 3px;
+  overflow: visible;
+}
+
+/* react-pdf canvas */
+.pdf-page-wrap .react-pdf__Page__canvas {
+  display: block;
+  border-radius: 3px;
+}
+
+/* Highlight overlay rect */
+.pdf-highlight {
+  position: absolute;
+  background: var(--highlight);
+  border-bottom: 2px solid var(--highlight-border);
+  pointer-events: none;
+  border-radius: 2px;
+  transition: opacity 0.2s;
+  z-index: 5;
+}
+
+.pdf-loading,
+.pdf-error {
+  padding: 48px;
+  color: var(--text-secondary);
+  font-size: 14px;
+}

@@ -6,7 +6,9 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi import BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 import traceback
+
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -167,6 +169,13 @@ async def query_endpoint(request: Request):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(500, str(e))
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 if __name__ == "__main__":
     import uvicorn
