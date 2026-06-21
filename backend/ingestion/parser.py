@@ -7,7 +7,6 @@ from docx import Document as DocxDocument
 
 from .models import TextBlock
 
-
 def parse_pdf(file_path: str) -> List[TextBlock]:
     blocks = []
     document_name = os.path.basename(file_path)
@@ -32,6 +31,8 @@ def parse_pdf(file_path: str) -> List[TextBlock]:
                 lines.setdefault(key, []).append(c)
 
             heading_stack: List[str] = []
+            page_body_lines: List[str] = []
+            last_section: str | None = None
 
             for key in sorted(lines):
                 runs = sorted(lines[key], key=lambda c: c["x0"])
@@ -44,26 +45,27 @@ def parse_pdf(file_path: str) -> List[TextBlock]:
                     "bold" in r.get("font", "").lower() for r in runs
                 )
 
-                # FIX: tolerance-based comparison instead of float equality.
-                # A line is a heading if its font is meaningfully larger than
-                # the body text mode, or if it is bold.
                 is_heading = (avg_size > body_size + 0.5) or (is_bold and avg_size >= body_size)
 
                 if is_heading:
                     heading_stack.append(line_text)
                 else:
-                    section = " > ".join(heading_stack) if heading_stack else None
-                    blocks.append(TextBlock(
-                        text=line_text,
-                        page_number=page_num,
-                        document_name=document_name,
-                        source_file=file_path,
-                        section_heading=section,
-                    ))
+                    last_section = " > ".join(heading_stack) if heading_stack else None
+                    page_body_lines.append(line_text)
+
+            # Emit one TextBlock per page so char offsets are page-scoped.
+            # This ensures char_start/char_end in chunks map correctly to
+            # the page-level character positions used by the PDF highlight overlay.
+            if page_body_lines:
+                blocks.append(TextBlock(
+                    text=" ".join(page_body_lines),
+                    page_number=page_num,
+                    document_name=document_name,
+                    source_file=file_path,
+                    section_heading=last_section,
+                ))
 
     return blocks
-
-
 def parse_docx(file_path: str) -> List[TextBlock]:
     blocks = []
     document_name = os.path.basename(file_path)

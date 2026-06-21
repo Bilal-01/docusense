@@ -45,6 +45,24 @@ export default function PDFViewer({ file, activeChunks, onCharMapUpdate }) {
     onCharMapUpdate({ ...charMapRef.current });
   };
 
+  const getHighlightRects = (page, charStart, charEnd, chunkText) => {
+    const pageData = charMapRef.current[page];
+    if (!pageData) return [];
+    const { items, pageHeight } = pageData;
+
+    // Try char offset match first
+    const byOffset = items.filter(
+        (it) => it.charEnd > charStart && it.charStart < charEnd
+    );
+    if (byOffset.length > 0 && charStart > 0) return byOffset;
+
+    // Fallback: match by text content (normalize whitespace for comparison)
+    const needle = chunkText.replace(/\s+/g, "").toLowerCase();
+    return items.filter((it) =>
+        needle.includes(it.str.replace(/\s+/g, "").toLowerCase()) && it.str.trim().length > 2
+    );
+  };
+
   const scrollToPage = (page) => {
     const el = pageRefs.current[page];
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -62,7 +80,7 @@ export default function PDFViewer({ file, activeChunks, onCharMapUpdate }) {
     if (!pageData) continue;
 
     const { items, pageHeight } = pageData;
-    const matched = items.filter((it) => it.charEnd > cs && it.charStart < ce);
+    const matched = getHighlightRects(page, cs, ce, chunk.text);
     if (!matched.length) continue;
 
     if (!highlights[page]) highlights[page] = [];
